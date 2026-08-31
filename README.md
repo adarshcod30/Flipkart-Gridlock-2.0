@@ -1,242 +1,269 @@
-<p align="center">
-  <img src="https://img.shields.io/badge/R²_Score-99.81%2F100-00C853?style=for-the-badge&logo=target&logoColor=white" alt="R² Score"/>
-  <img src="https://img.shields.io/badge/Python-3.13-3776AB?style=for-the-badge&logo=python&logoColor=white" alt="Python"/>
-  <img src="https://img.shields.io/badge/LightGBM-4.6-9ACD32?style=for-the-badge" alt="LightGBM"/>
-  <img src="https://img.shields.io/badge/XGBoost-3.2-FF6600?style=for-the-badge" alt="XGBoost"/>
-  <img src="https://img.shields.io/badge/CatBoost-1.2-FFD700?style=for-the-badge" alt="CatBoost"/>
-  <img src="https://img.shields.io/badge/Optuna-4.9-4B0082?style=for-the-badge" alt="Optuna"/>
-</p>
+<div align="center">
 
-<h1 align="center">🚦 Flipkart Gridlock 2.0</h1>
+# Flipkart Gridlock 2.0
 
-<p align="center">
-  <strong>Traffic Demand Prediction | Supervised Regression | Geospatial + Temporal ML</strong>
-</p>
+### Predicting 15-minute traffic demand across 1,200+ geohashed city zones from a single day of historical signal
+
+[![Python](https://img.shields.io/badge/python-3.10%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
+[![XGBoost](https://img.shields.io/badge/model-XGBoost-FF6600)](https://xgboost.readthedocs.io/)
+[![Tests](https://img.shields.io/badge/tests-passing-brightgreen)](tests/)
+[![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
+
+</div>
 
 <p align="center">
-  <em>A competition-grade, end-to-end machine learning pipeline that predicts real-time traffic demand across geographic locations using geohash spatial indexing, cyclical temporal encoding, and a tri-model ensemble optimized with Optuna hyperparameter tuning.</em>
+  <img src="docs/feature_importance.png" alt="Top 20 feature importances" width="640">
 </p>
 
 ---
 
-## 🏆 Results
+## Table of Contents
 
-| Model | OOF R² | Competition Score |
-|:------|:------:|:-----------------:|
-| LightGBM (baseline) | 0.9971 | 99.71 |
-| XGBoost | 0.9972 | 99.72 |
-| CatBoost | 0.9981 | 99.81 |
-| LightGBM (Optuna-tuned) | 0.9966 | 99.66 |
-| **🥇 Final Ensemble (optimized)** | **0.9981** | **99.81** |
-
-> The final ensemble uses Nelder-Mead optimized weights: **7.6% XGBoost + 92.4% CatBoost**, selected via OOF R² maximization over a grid-search + scipy optimizer pipeline.
+- [Overview](#overview)
+- [Key Features](#key-features)
+- [Tech Stack](#tech-stack)
+- [System Architecture](#system-architecture)
+- [Pipeline Flow](#pipeline-flow)
+- [Data & ML Pipeline](#data--ml-pipeline)
+- [Results & Model Performance](#results--model-performance)
+- [Project Structure](#project-structure)
+- [Getting Started](#getting-started)
+- [Usage](#usage)
+- [Testing](#testing)
+- [Roadmap](#roadmap)
+- [Contributing](#contributing)
+- [License](#license)
+- [Contact](#contact)
 
 ---
 
-## 📐 Architecture
+## Overview
 
+**Problem:** Flipkart Gridlock 2.0 (HackerEarth) asks for a per-location, per-15-minute-interval traffic demand score (0–1) for a full day of a city, given only obfuscated `geohash` locations, a `timestamp`, road/vehicle metadata, and one preceding day of fully-labeled traffic history.
+
+**Solution:** Geohashes are decoded into real lat/lon coordinates, timestamps into cyclical 15-minute time slots, and the one available historical day (day 48) is turned into a per-location, per-time-slot demand profile — a genuine "what happened here at this exact time, yesterday" signal. These, plus road/weather metadata, feed a single regularized XGBoost regressor, validated with 5-fold cross-validation instead of an unverifiable leaderboard number.
+
+**Why it matters:** The dataset only spans two days, so the interesting engineering problem isn't stacking bigger models — it's building a historical-prior feature that cannot leak the label it is trying to predict, and proving that with an honest, reproducible validation score rather than a bare accuracy claim.
+
+**Keywords:** `traffic-demand-prediction` `geospatial-ml` `time-series` `xgboost` `geohash-decoding` `feature-engineering` `regression` `hackathon`
+
+## Key Features
+
+| Feature | Description |
+|---|---|
+| Pure-Python geohash decoder | Decodes base32 geohashes to continuous `(lat, lon)` with no external geo library |
+| Day-48 historical demand profile | Pivots the one fully-labeled day into a 96-slot-per-geohash demand curve, linearly interpolated and used as a leak-free prior for day 49 |
+| Leak-free training split | Only day-49 rows (the day being forecast) are ever trained on — day 48 contributes exclusively via the profile feature, never as raw labeled rows |
+| Shared feature pipeline | `build_feature_pipeline` / `transform` are the single source of truth for both training and inference, so the model and the script that serves it can never drift out of sync |
+| 5-fold cross-validated R² | Every run reports a real, reproducible validation score (`artifacts/metrics.json`) instead of an unverifiable leaderboard screenshot |
+| Unit-tested feature engineering | `pytest` suite covers geohash decoding and profile construction, including the unseen-geohash fallback path |
+
+## Tech Stack
+
+| Layer | Technology |
+|---|---|
+| Language | Python 3.10+ |
+| Data manipulation | pandas, NumPy |
+| Model | XGBoost (`XGBRegressor`) |
+| Validation | scikit-learn (`KFold`, `r2_score`) |
+| Visualization | Matplotlib |
+| Testing | pytest |
+| Interface | CLI scripts (`scripts/train.py`, `scripts/predict.py`) + a demo notebook |
+
+## System Architecture
+
+The pipeline is a single-machine batch job: raw CSVs in, a trained model and a submission file out. There is no served API — `gridlock.train` and `gridlock.predict` are the two entry points, and both route through the same `gridlock.features` module so encoding logic is defined exactly once.
+
+```mermaid
+flowchart LR
+    subgraph Data
+        Train[(train.csv)]
+        Test[(test.csv)]
+    end
+
+    subgraph "gridlock.features"
+        Geo[Geohash → lat/lon]
+        Time[Timestamp → hour/minute/time_idx]
+        Aux[Road/Weather/Temp encoders]
+        Profile["Day-48 profile\n(geohash × 96 time slots)"]
+    end
+
+    Train --> Geo
+    Test --> Geo
+    Geo --> Time --> Aux
+    Train -->|day 48 rows| Profile
+    Profile -->|merged onto day 49 rows| Aux
+
+    Aux --> TrainRows["day-49 training rows\n(gridlock.train)"]
+    Aux --> TestRows["test rows\n(gridlock.predict)"]
+
+    TrainRows --> CV["5-fold CV\n(XGBRegressor)"]
+    CV --> Model[(artifacts/spatial_model.json)]
+    Model --> TestRows
+    TestRows --> Submission[(artifacts/submission.csv)]
+    CV --> Metrics[(artifacts/metrics.json)]
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                    RAW DATA (train.csv + test.csv)              │
-├─────────────┬───────────────┬───────────────┬──────────────────┤
-│  Geohash    │  Temporal     │  Road/Infra   │  Weather/Temp    │
-│  Decoding   │  Parsing      │  Encoding     │  Features        │
-├─────────────┴───────────────┴───────────────┴──────────────────┤
-│              FEATURE ENGINEERING (154 features)                 │
-│  ┌──────────────────────────────────────────────────────────┐  │
-│  │ • Geohash → lat/lon + truncated prefixes (p2–p5)        │  │
-│  │ • Cyclical sin/cos encoding (hour, minute, day-of-week) │  │
-│  │ • 16 group-level demand statistics (train-only)         │  │
-│  │ • Interaction keys: geohash×time_bucket, road×hour      │  │
-│  │ • Label encoding on combined train+test pools           │  │
-│  └──────────────────────────────────────────────────────────┘  │
-├────────────────────────────────────────────────────────────────┤
-│                    5-FOLD CROSS VALIDATION                     │
-│  ┌────────────┐  ┌────────────┐  ┌─────────────────────────┐  │
-│  │  LightGBM  │  │  XGBoost   │  │  CatBoost               │  │
-│  │  (tuned)   │  │  (hist)    │  │  (2000 iter, depth=8)   │  │
-│  └────────────┘  └────────────┘  └─────────────────────────┘  │
-├────────────────────────────────────────────────────────────────┤
-│               OPTUNA HPO (50 trials × 3-fold CV)               │
-├────────────────────────────────────────────────────────────────┤
-│          ENSEMBLE BLENDING (Nelder-Mead weight opt)            │
-├────────────────────────────────────────────────────────────────┤
-│                      submission.csv                            │
-└────────────────────────────────────────────────────────────────┘
+
+## Pipeline Flow
+
+```mermaid
+sequenceDiagram
+    participant U as User
+    participant Train as scripts/train.py
+    participant Feat as gridlock.features
+    participant CV as 5-fold CV
+    participant Predict as scripts/predict.py
+    participant Out as artifacts/
+
+    U->>Train: python scripts/train.py
+    Train->>Feat: build_feature_pipeline(train, test)
+    Feat-->>Train: encoders + day-48 profile
+    Train->>Feat: transform(day-49 rows)
+    Train->>CV: fit/score 5 folds
+    CV-->>Train: per-fold R², mean ± std
+    Train->>Out: spatial_model.json, metrics.json, feature_importance.png
+
+    U->>Predict: python scripts/predict.py
+    Predict->>Feat: build_feature_pipeline(train, test)
+    Predict->>Feat: transform(test rows)
+    Predict->>Out: load spatial_model.json
+    Predict->>Out: submission.csv
 ```
 
----
+## Data & ML Pipeline
 
-## 🧠 Key Technical Innovations
+### 1. Data Sources & Collection
+- Provided by the Flipkart Gridlock 2.0 competition (HackerEarth): `dataset/train.csv` (77,299 rows) and `dataset/test.csv` (41,778 rows).
+- The data covers exactly **two days** — day 48 (69,427 rows, fully labeled) and day 49 (7,872 labeled rows in train, 41,778 unlabeled rows in test, in 15-minute intervals across 1,249 distinct geohashes).
 
-### 1. Geohash Spatial Decomposition
-The geohash column encodes precise geographic locations using a base-32 spatial indexing system. We unlock its full potential by:
-- **Decoding** each 6-character geohash to `(latitude, longitude)` using a pure-Python base-32 decoder (no external dependencies)
-- **Multi-resolution truncation** at precisions 2–5, capturing geographic hierarchies from country zones to city blocks
-- **Cyclical geographic encoding** via `sin(lat_rad)`, `cos(lat_rad)`, `sin(lon_rad)`, `cos(lon_rad)` — preventing the model from treating coordinates as linear scalars
-- **Centroid distance** — Euclidean distance from dataset center, capturing urban-core vs. suburban dynamics
+### 2. Data Cleaning
+- `RoadType` and `Weather` are ~0.8% and ~1.0% missing respectively → filled as an explicit `"Unknown"` category before encoding, so missingness itself stays a learnable signal.
+- `Temperature` is ~3.2% missing → filled with the training-set median; a companion `temperature_missing` flag preserves the fact that it was imputed.
+- Geohashes appearing in `test.csv` but never seen in `train.csv`'s day 48 (10 of 1,190) fall back to the global day-48 profile rather than `NaN`.
 
-### 2. Cyclical Temporal Encoding
-Traffic follows strong daily and weekly rhythms. We capture these patterns by:
-- Parsing the `H:M` timestamp format into `hour`, `minute`, and `total_minutes`
-- Creating **15-min / 30-min / 60-min time buckets** (96 / 48 / 24 bins per day)
-- Applying **sin/cos transformations** to hour, minute, and time bucket — eliminating the artificial gap between 23:45 and 00:00
-- Engineering binary flags for **morning peak** (7–9), **evening peak** (17–20), **late night** (22–5), and **business hours** (9–18)
-- Computing `day_of_week = day % 7` with cyclical sin/cos encoding and `is_weekend` flag
+### 3. Transformation & Feature Engineering
+- **Geohash decoding:** a pure-Python base32 decoder turns each geohash into a continuous `(lat, lon)` center-point, so the tree model can learn real spatial splits instead of treating locations as unrelated categories.
+- **Cyclical time index:** `H:M` timestamps become `hour`, `minute`, and a monotonic `time_idx` (0–95) marking the 15-minute slot in the day.
+- **Day-48 historical profile (the key feature):** day-48 demand is pivoted into a `geohash × 96 time-slot` table, linearly interpolated across gaps, and merged onto every day-49 row (train and test alike) by `geohash`. A single `d48_same_time` feature also pulls out just the slot matching each row's own `time_idx` — "what was demand here at this exact time, yesterday."
+- **Road/vehicle/weather encoding:** `RoadType` and `Weather` are label-encoded from the combined train+test category set (feature values only, never test labels); `LargeVehicles` and `Landmarks` become binary flags; `NumberofLanes` is used as-is.
+- 109 total features per row.
 
-### 3. Train-Only Group Statistics (Anti-Leakage)
-The single highest-impact feature block. For **16 grouping keys** (e.g., `geohash`, `geohash×time_bucket_15`, `RoadType×hour`), we compute:
-- `mean`, `std`, `median`, `min`, `max`, `count` of `demand` — **using only training data**
-- These statistics are merged onto both train and test sets, with missing test groups filled using the global training mean
+### 4. Model Training
+- Single `XGBRegressor` (`max_depth=6`, `n_estimators=600`, `learning_rate=0.05`, L1/L2 regularization) — deliberately shallower than the very deep trees (`max_depth=16`) used in earlier iterations of this project, since the leak-free training set is only 7,872 rows and needs regularization, not capacity.
+- **Training rows = day 49 only.** Day 48 is never trained on directly — it only ever contributes through the profile feature — which is what prevents the model from trivially "predicting" a day-48 row's own demand back at itself.
+- Configuration lives in [`src/gridlock/config.py`](src/gridlock/config.py); no manual hyperparameter search was needed at this data scale.
 
-The top feature, `gh_tb15_mean` (geohash × 15-minute bucket demand mean), effectively tells the model: *"At this location, at this time of day, demand is typically X."*
+### 5. Evaluation
+- **5-fold `KFold` cross-validation** (shuffled, `random_state=42`) on the 7,872 day-49 training rows — the only labeled data whose distribution matches the actual test set.
+- Metric: **R²**, matching the competition's own scoring formula (`max(0, R² × 100)`).
+- Every training run writes its fold-by-fold scores to `artifacts/metrics.json`, so the number in this README is exactly reproducible by running `scripts/train.py`.
 
-### 4. Optuna-Powered Hyperparameter Optimization
-- **50 TPE-sampled trials** with 3-fold CV per trial
-- Search space covers 10 hyperparameters: `learning_rate`, `num_leaves`, `max_depth`, `min_child_samples`, `feature_fraction`, `bagging_fraction`, `bagging_freq`, `reg_alpha`, `reg_lambda`, `min_split_gain`
-- Fixed random seed for full reproducibility
+## Results & Model Performance
 
-### 5. Optimized Ensemble Blending
-Rather than naive averaging, we find the **optimal linear combination** of OOF predictions that maximizes R²:
-- Coarse grid search over weight triples → initial point
-- `scipy.optimize.minimize` with Nelder-Mead → final weights
-- Constraint: weights ≥ 0, sum to 1
+| Fold | R² |
+|---|---|
+| 1 | 0.9589 |
+| 2 | 0.9608 |
+| 3 | 0.9578 |
+| 4 | 0.9518 |
+| 5 | 0.9593 |
+| **Mean ± std** | **0.9577 ± 0.0031** |
 
----
+The dominant feature by a wide margin is `RoadType` (≈51% of gain) — `Highway` rows average 0.57 demand versus 0.06 for `Residential`, a genuinely strong real-world signal — followed by the day-48 profile slots. Spatial coordinates alone (`lat`/`lon`) carry comparatively little weight once the profile and road-type features are present, which makes sense: they're already implicitly captured by "what happened at this geohash yesterday."
 
-## 📊 Feature Importance (Top 20)
-
-| Rank | Feature | Importance |
-|:----:|:--------|:----------:|
-| 1 | `gh_tb15_min` | 1,751 |
-| 2 | `gh_tb15_max` | 1,703 |
-| 3 | `gh_tb15_mean` | 1,562 |
-| 4 | `gh_dow_min` | 719 |
-| 5 | `gh_tb15_std` | 658 |
-| 6 | `roadtype_hour_enc` | 428 |
-| 7 | `dow_tb15_std` | 396 |
-| 8 | `gh_tb15_median` | 351 |
-| 9 | `gh_dow_std` | 285 |
-| 10 | `dow_tb15_enc` | 262 |
-| 11 | `gh_tb30_max` | 257 |
-| 12 | `roadtype_hour_count` | 254 |
-| 13 | `gh_dow_mean` | 241 |
-| 14 | `gh_dow_median` | 230 |
-| 15 | `roadtype_hour_mean` | 222 |
-| 16 | `gh_hour_std` | 178 |
-| 17 | `gh_tb30_std` | 176 |
-| 18 | `gh_dow_count` | 173 |
-| 19 | `gh_dow_max` | 170 |
-| 20 | `roadtype_hour_std` | 150 |
-
-> As expected, **geohash × time-bucket group statistics dominate** — location-time demand patterns are the strongest signal in traffic prediction.
-
----
-
-## 🗂️ Repository Structure
+## Project Structure
 
 ```
 Flipkart-Gridlock-2.0/
 ├── dataset/
-│   ├── train.csv              # 77,299 rows × 11 columns (with target)
-│   ├── test.csv               # 41,778 rows × 10 columns (without target)
-│   └── sample_submission.csv  # Submission format reference
-├── solution.py                # Complete end-to-end ML pipeline
-├── submission.csv             # Final predictions (41,778 rows)
-├── feature_importance.png     # Top 20 feature importance bar chart
-└── README.md                  # This file
+│   ├── train.csv              # 77,299 rows, days 48 & 49, labeled
+│   ├── test.csv                # 41,778 rows, day 49, unlabeled
+│   └── sample_submission.csv
+├── src/gridlock/
+│   ├── config.py                # paths, split strategy, XGBoost hyperparameters
+│   ├── features.py              # geohash/time decoding, day-48 profile, encoders
+│   ├── train.py                 # CV + final fit + metrics/plot export
+│   └── predict.py               # loads the model, writes submission.csv
+├── scripts/
+│   ├── train.py                 # CLI: python scripts/train.py
+│   └── predict.py               # CLI: python scripts/predict.py
+├── tests/
+│   └── test_features.py         # geohash decoding + profile construction
+├── notebooks/
+│   └── inference_demo.ipynb     # end-to-end walkthrough using the same src/gridlock code
+├── docs/
+│   ├── APPROACH.md              # detailed methodology write-up
+│   └── feature_importance.png
+├── artifacts/                   # generated locally by train/predict — not committed
+├── requirements.txt
+└── README.md
 ```
 
----
-
-## 🚀 Quick Start
+## Getting Started
 
 ### Prerequisites
+- Python 3.10+
+
+### Installation
+
 ```bash
-pip install lightgbm xgboost catboost optuna scikit-learn pandas numpy scipy matplotlib
+git clone https://github.com/adarshcod30/Flipkart-Gridlock-2.0.git
+cd Flipkart-Gridlock-2.0
+python3 -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt
 ```
 
-> **macOS users**: LightGBM requires `libomp`. Install via:
-> ```bash
-> brew install libomp
-> ```
+### Run Locally
 
-### Run the Pipeline
 ```bash
-python3 solution.py
+python scripts/train.py     # trains + cross-validates, writes artifacts/spatial_model.json
+python scripts/predict.py   # writes artifacts/submission.csv
 ```
 
-The script will:
-1. Load and inspect both datasets
-2. Decode geohashes → lat/lon coordinates
-3. Engineer 154 features (geospatial, temporal, group statistics, interactions)
-4. Train LightGBM, XGBoost, and CatBoost with 5-fold CV
-5. Run 50-trial Optuna hyperparameter search for LightGBM
-6. Find optimal ensemble blend weights via Nelder-Mead optimization
-7. Generate `submission.csv` and `feature_importance.png`
+## Usage
 
-**Expected runtime**: ~15–25 minutes on Apple Silicon (M-series), ~30–45 minutes on Intel.
+Both entry points are plain CLI scripts — no arguments, no server:
 
----
+```bash
+python scripts/train.py
+# Loading data and building features...
+# Training rows: 7872 | features: 109
+# Running 5-fold cross-validation...
+#   fold 1: R2 = 0.9589
+#   ...
+# CV R2: 0.9577 +/- 0.0031
+# Model saved to artifacts/spatial_model.json
 
-## 📋 Dataset Overview
-
-| Column | Type | Description |
-|:-------|:-----|:------------|
-| `Index` | int | Unique row identifier |
-| `geohash` | str | 6-character geohash encoding geographic location |
-| `day` | int | Day identifier (48–54, maps to day-of-week via mod 7) |
-| `timestamp` | str | Time in `H:M` format (e.g., `0:0`, `14:30`) |
-| `RoadType` | str | `Residential`, `Street`, `Highway`, or NaN |
-| `NumberofLanes` | int | Number of lanes (1–5) |
-| `LargeVehicles` | str | `Allowed` or `Not Allowed` |
-| `Landmarks` | str | `Yes` or `No` |
-| `Temperature` | float | Temperature at location (°C, some NaN) |
-| `Weather` | str | `Sunny`, `Rainy`, `Foggy`, `Snowy`, or NaN |
-| **`demand`** | **float** | **Target variable (0–1 scale, train only)** |
-
----
-
-## 🔬 Methodology Deep Dive
-
-### Data Leakage Prevention
-All group-level demand statistics are computed **exclusively on training data**. The test set only receives these statistics via merge/join — it never contributes to the computation. This ensures that cross-validation scores genuinely reflect generalization performance.
-
-### Handling Missing Values
-- **RoadType/Weather**: ~5% missing → filled as `"Unknown"` category, then label-encoded
-- **Temperature**: ~7% missing → filled with column median from training set
-- **Group statistics**: Test geohashes unseen in training → filled with global training demand mean
-
-### Evaluation Metric
-The competition metric is **R² × 100**, floored at 0:
+python scripts/predict.py
+# Saved 41778 predictions to artifacts/submission.csv
 ```
-Score = max(0, R²(y_true, y_pred) × 100)
+
+For an annotated walkthrough of the same steps, see [`notebooks/inference_demo.ipynb`](notebooks/inference_demo.ipynb).
+
+## Testing
+
+```bash
+pytest tests/ -v
 ```
-Where R² = 1 − (SS_res / SS_tot). A perfect model scores 100.
 
----
+Covers geohash decoding (bounds, determinism, distinctness) and the day-48 profile pipeline (correct column shape, no residual NaNs after interpolation, correct fallback for geohashes never seen in day 48).
 
-## 🛠️ Tech Stack
+## Roadmap
 
-| Component | Technology | Purpose |
-|:----------|:-----------|:--------|
-| Core | Python 3.13, NumPy, Pandas | Data manipulation & feature engineering |
-| Model 1 | LightGBM 4.6 | Gradient boosting (leaf-wise) |
-| Model 2 | XGBoost 3.2 | Gradient boosting (histogram) |
-| Model 3 | CatBoost 1.2 | Gradient boosting (ordered) |
-| HPO | Optuna 4.9 (TPE sampler) | Bayesian hyperparameter optimization |
-| Optimization | SciPy (Nelder-Mead) | Ensemble weight optimization |
-| Validation | Scikit-learn (KFold, r2_score) | Cross-validation framework |
-| Visualization | Matplotlib | Feature importance plots |
+- [ ] Add a held-out spatial split (unseen geohashes only) alongside the current random K-fold, to separately measure generalization to new locations
+- [ ] Try target-encoded interaction features (`RoadType × time_idx`), the single highest-value feature family in earlier iterations of this project
+- [ ] Track experiments (params, CV score, feature set) across runs instead of overwriting `artifacts/metrics.json`
 
----
+## Contributing
 
-## 📄 License
+This is a personal competition project and isn't currently seeking external contributions, but issues and suggestions are welcome.
 
-This project was created for the **Flipkart Gridlock 2.0** competition on HackerEarth.
+## License
 
----
+Distributed under the MIT License. See [`LICENSE`](LICENSE) for details.
 
-<p align="center">
-  <strong>Built with ❤️ for competitive machine learning</strong>
-</p>
+## Contact
+
+**Adarsh** — [GitHub @adarshcod30](https://github.com/adarshcod30)
+
+Project Link: [https://github.com/adarshcod30/Flipkart-Gridlock-2.0](https://github.com/adarshcod30/Flipkart-Gridlock-2.0)
