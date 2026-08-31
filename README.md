@@ -8,6 +8,7 @@
 [![XGBoost](https://img.shields.io/badge/model-XGBoost-FF6600)](https://xgboost.readthedocs.io/)
 [![Tests](https://img.shields.io/badge/tests-passing-brightgreen)](tests/)
 [![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
+[![Model on HF](https://img.shields.io/badge/%F0%9F%A4%97%20model-flipkart--gridlock--2.0-yellow)](https://huggingface.co/adarshcod30/flipkart-gridlock-2.0)
 
 </div>
 
@@ -170,6 +171,17 @@ sequenceDiagram
 | **Mean ± std** | **0.9577 ± 0.0031** |
 
 The dominant feature by a wide margin is `RoadType` (≈51% of gain) — `Highway` rows average 0.57 demand versus 0.06 for `Residential`, a genuinely strong real-world signal — followed by the day-48 profile slots. Spatial coordinates alone (`lat`/`lon`) carry comparatively little weight once the profile and road-type features are present, which makes sense: they're already implicitly captured by "what happened at this geohash yesterday."
+
+**Pretrained checkpoint:** the model above is published at [huggingface.co/adarshcod30/flipkart-gridlock-2.0](https://huggingface.co/adarshcod30/flipkart-gridlock-2.0) — `artifacts/spatial_model.json` is gitignored (regenerate it with `scripts/train.py`, or download the hosted copy directly):
+
+```python
+from huggingface_hub import hf_hub_download
+from xgboost import XGBRegressor
+
+model_path = hf_hub_download(repo_id="adarshcod30/flipkart-gridlock-2.0", filename="spatial_model.json")
+model = XGBRegressor()
+model.load_model(model_path)
+```
 
 ## Project Structure
 
