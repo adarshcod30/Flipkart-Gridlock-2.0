@@ -17,3 +17,8 @@ artifacts/
 # Staging folder used to push the checkpoint to Hugging Face Hub — the
 # published copy lives at huggingface.co/adarshcod30/flipkart-gridlock-2.0.
 hf_model/
+
+# secrets, build output and local noise
+.env.local
+*.log
+venv/
