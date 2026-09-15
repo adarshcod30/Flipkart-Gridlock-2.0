@@ -17,10 +17,3 @@ artifacts/
 # Staging folder used to push the checkpoint to Hugging Face Hub — the
 # published copy lives at huggingface.co/adarshcod30/flipkart-gridlock-2.0.
 hf_model/
-
-# local agent and editor files, never committed
-.claude/
-.claude.json
-CLAUDE.local.md
-CLAUDE.md
-AGENTS.md
